@@ -1,0 +1,40 @@
+# git-ssh-wrapper 配置示例
+# 实际使用时复制为 ~/.ssh/git-ssh-wrapper.yaml
+# （Windows 上即 C:/Users/<你的用户名>/.ssh/git-ssh-wrapper.yaml）
+#
+# 每条映射由 (host, user_or_group) 唯一确定一个 ssh_key：
+#   host:           remote URL 中的 <host_name>，如 github.com、gitlab.com、自建 git 服务器域名
+#   user_or_group:  remote URL 中的 <user_or_group_name>，即仓库路径第一段
+#                   git@github.com:alice/repo.git       -> alice
+#                   ssh://git@github.com/myorg/repo.git -> myorg
+#   ssh_key:        私钥位置，两种写法：
+#                   1) 仅文件名      -> 在 ~/.ssh/ 下查找，不存在则报错
+#                   2) 完整路径      -> 绝对路径，或相对于本配置文件所在目录的相对路径，
+#                                       不存在则报错（支持 ~ 和环境变量）
+
+keys:
+  # 同一个人/组织在不同 host 上使用不同 key
+  - host: github.com
+    user_or_group: alice
+    ssh_key: id_ed25519_alice            # 仅文件名 -> 查找 ~/.ssh/id_ed25519_alice
+
+  - host: gitlab.com
+    user_or_group: alice
+    ssh_key: id_ed25519_alice_gitlab     # 仅文件名 -> 查找 ~/.ssh/id_ed25519_alice_gitlab
+
+  # 同一 host 下不同 user_or_group 使用不同 key（多帐号共存的核心场景）
+  - host: github.com
+    user_or_group: myorg
+    ssh_key: C:/Users/alice/.ssh/id_ed25519_myorg   # Windows 绝对路径
+
+  - host: github.com
+    user_or_group: bob
+    ssh_key: ~/.ssh/id_rsa_bob           # 含 ~ 的路径（Linux/Windows 均可）
+
+  # 自建 git 服务器（支持 ssh:// 带端口的情况，host 仍只填域名，端口无需填写）
+  - host: git.internal.example.com
+    user_or_group: devteam
+    ssh_key: ./keys/id_ed25519_devteam   # 相对路径：相对于本配置文件所在目录
+
+# 可选：兜底 key。当 remote 的 (host, user_or_group) 在上面没有匹配条目时使用；
+# 不配置则按 ssh 默认行为透传（走 ~/.ssh/config 与 ssh-agent）。
