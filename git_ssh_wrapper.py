@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-git-ssh-wrapper —— 同一台机器、同一 OS 帐号下，按 (host_name, user_or_group)
+git-ssh-wrapper —— 同一台机器、同一 OS 帐号下，按 (host_name, user.email)
 选择不同 SSH key 的 git SSH 包装器。同时适配 Windows 和 Linux。
 
 工作原理
@@ -13,15 +13,17 @@ git-ssh-wrapper —— 同一台机器、同一 OS 帐号下，按 (host_name, u
     Windows:
         git config --global core.sshCommand "python C:/path/to/git_ssh_wrapper.py"
 
-git 只对 SSH 类 remote（git@host:user/repo.git 或 ssh://git@host/user/repo.git）
+git 只对 SSH 类 remote（git@host:owner/repo.git 或 ssh://git@host/owner/repo.git）
 的 push / pull / fetch 等远端操作调用 core.sshCommand；https、本地路径等其他
-协议根本不会调用本脚本 —— 即需求 1 所说的“其余情况空操作”由 git 自身保证。
-脚本内部另有兜底：参数无法解析时原样透传给真正的 ssh，不做任何干预。
+协议根本不会调用本脚本 —— 即“其余情况空操作”由 git 自身保证。脚本内部另有
+兜底：参数无法解析时原样透传给真正的 ssh，不做任何干预。
 
 git 调用本脚本时的参数形如：
-    [-p <port>] [-o ...] git@<host_name> "git-upload-pack '/<user_or_group>/<repo_name>.git'"
-脚本从中解析 <host_name> 与 <user_or_group>，在 YAML 配置中查找唯一对应的
-<sshKey>，然后执行：
+    [-p <port>] [-o ...] git@<host_name> "git-upload-pack '/<owner>/<repo>.git'"
+脚本从中解析 <host_name>，并读取当前代码仓库内生效的 user.email
+（git config user.email，仓库本地配置优先于全局配置；clone 时无仓库本地配置，
+自动退化为全局配置）。二元组 (<host_name>, user.email) 在 YAML 配置中唯一确定
+一个 <sshKey>，然后执行：
     ssh -i <sshKey> -o IdentitiesOnly=yes <原始参数...>
 
 依赖
@@ -37,7 +39,6 @@ git 调用本脚本时的参数形如：
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -60,14 +61,6 @@ for _stream in (sys.stdout, sys.stderr):
 # ssh 选项中“带一个独立参数值”的选项字母（用于跳过参数找到 host）
 _SSH_OPTS_WITH_VALUE = set("bcDEeFIiJLlmOopQRSWw")
 
-# 匹配 git 通过 ssh 发送的远端命令，例如：
-#   git-upload-pack '/user_or_group/repo.git'
-#   git-receive-pack 'user_or_group/repo.git'
-_REMOTE_CMD_RE = re.compile(
-    r"git-(?:upload|receive)-pack\s+"
-    r"(?:'(?P<sq>[^']*)'|\"(?P<dq>[^\"]*)\"|(?P<plain>\S+))"
-)
-
 
 def die(message: str, code: int = 1) -> "SystemExit":
     print(f"git-ssh-wrapper: 错误: {message}", file=sys.stderr)
@@ -78,11 +71,12 @@ def warn(message: str) -> None:
     print(f"git-ssh-wrapper: 警告: {message}", file=sys.stderr)
 
 
-def parse_ssh_argv(argv: list[str]) -> tuple[str, str | None] | None:
-    """解析 git 传给 ssh 命令的参数。
+def parse_ssh_host(argv: list[str]) -> str | None:
+    """从 git 传给 ssh 命令的参数中解析 host_name。
 
-    返回 (host_name, user_or_group)；参数结构不符合预期时返回 None
-    （调用方应原样透传给真正的 ssh，即“空操作”）。
+    兼容 git@host:owner/repo.git 与 ssh://git@host/owner/repo.git 两种 URL
+    形态（git 均已转换为对 ssh 的调用，后者带端口时会以 -p 传入）。
+    参数结构不符合预期时返回 None（调用方应原样透传，即“空操作”）。
     """
     i = 0
     n = len(argv)
@@ -106,26 +100,38 @@ def parse_ssh_argv(argv: list[str]) -> tuple[str, str | None] | None:
         return None
 
     target = argv[i]
-    command_args = argv[i + 1 :]
-
     # 形如 git@github.com；兼容 IPv6 的 [::1] 写法
     host = target.rsplit("@", 1)[-1].strip("[]")
-    if not host:
+    return host or None
+
+
+def get_effective_user_email() -> str | None:
+    """读取当前代码仓库内生效的 user.email（本地配置优先于全局配置）。
+
+    未配置或无法调用 git 时返回 None。
+    """
+    git_bin = None
+    for name in (["git.exe", "git"] if os.name == "nt" else ["git"]):
+        git_bin = shutil.which(name)
+        if git_bin:
+            break
+    if not git_bin:
+        warn("未在 PATH 中找到 git，无法读取 user.email")
         return None
-
-    # 从远端命令中提取仓库路径，取第一段作为 user_or_group。
-    # 对应两种 URL 形态：
-    #   git@host:user_or_group/repo.git        -> 'user_or_group/repo.git'
-    #   ssh://git@host/user_or_group/repo.git  -> '/user_or_group/repo.git'
-    user_or_group = None
-    match = _REMOTE_CMD_RE.search(" ".join(command_args))
-    if match:
-        repo_path = (match.group("sq") or match.group("dq") or match.group("plain") or "")
-        repo_path = repo_path.lstrip("/")
-        if repo_path:
-            user_or_group = repo_path.split("/", 1)[0]
-
-    return host, user_or_group
+    try:
+        result = subprocess.run(
+            [git_bin, "config", "--get", "user.email"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        warn(f"调用 git config 读取 user.email 失败: {exc}")
+        return None
+    if result.returncode != 0:
+        return None
+    email = result.stdout.strip()
+    return email or None
 
 
 def load_config(path: Path) -> dict:
@@ -143,25 +149,28 @@ def load_config(path: Path) -> dict:
     return data
 
 
-def select_entry(entries: list, host: str, user_or_group: str) -> dict | None:
-    """按 (host, user_or_group) 查找唯一条目；多条匹配视为配置错误。"""
+def select_entry(entries: list, host: str, email: str) -> dict | None:
+    """按 (host, user.email) 查找唯一条目；多条匹配视为配置错误。
+
+    host 不区分大小写（DNS 约定），email 按配置原样精确匹配。
+    """
     matches = [
         e
         for e in entries
         if isinstance(e, dict)
         and str(e.get("host", "")).lower() == host.lower()
-        and str(e.get("user_or_group", "")) == user_or_group
+        and str(e.get("email", "")).strip() == email
     ]
     if len(matches) > 1:
         die(
-            f"配置中存在多条匹配 (host={host}, user_or_group={user_or_group}) 的条目，"
+            f"配置中存在多条匹配 (host={host}, email={email}) 的条目，"
             "无法唯一确定 sshKey，请修正配置文件"
         )
     return matches[0] if matches else None
 
 
 def resolve_key_path(key_spec: str, config_dir: Path) -> Path:
-    """按需求 4 解析 key 路径：
+    """解析 key 路径：
 
     - 仅文件名（不含路径分隔符）：在 ~/.ssh/ 下查找，不存在则报错；
     - 完整路径（绝对路径或含分隔符的相对路径）：按给出的路径查找
@@ -204,41 +213,46 @@ def main() -> int:
     orig_argv = sys.argv[1:]
     ssh_bin = find_real_ssh()
 
-    # 需求 1 的脚本侧兜底：参数无法识别为 git 的 ssh 调用时，原样透传（空操作）
-    parsed = parse_ssh_argv(orig_argv)
-    if parsed is None:
+    # 参数无法识别为 git 的 ssh 调用时，原样透传（空操作）
+    host = parse_ssh_host(orig_argv)
+    if host is None:
         warn("无法解析调用参数，原样透传给 ssh，不做任何处理")
         return run_ssh(ssh_bin, [], orig_argv)
 
-    host, user_or_group = parsed
-    if not user_or_group:
-        warn(f"未能从远端命令中解析 user_or_group（host={host}），原样透传")
-        return run_ssh(ssh_bin, [], orig_argv)
-
     config = load_config(CONFIG_PATH)
-    entries = config.get("keys") or []
-    if not isinstance(entries, list):
-        die("配置文件中的 keys 字段必须是列表")
+    default_key = config.get("default_key")
 
-    entry = select_entry(entries, host, user_or_group)
-
-    if entry is None:
-        # 配置中无该 (host, user_or_group) 的映射：回退到 default_key（若配置），
-        # 否则原样透传，交给 ssh 自身的 ~/.ssh/config 与 agent 处理
-        default_key = config.get("default_key")
-        if not default_key:
-            warn(
-                f"配置中未找到 (host={host}, user_or_group={user_or_group}) 的映射，"
-                "按 ssh 默认行为透传"
-            )
-            return run_ssh(ssh_bin, [], orig_argv)
-        key_spec = str(default_key)
-    else:
-        key_spec = str(entry.get("ssh_key", ""))
-        if not key_spec:
+    email = get_effective_user_email()
+    if email is None:
+        if default_key:
+            warn("未配置 user.email，回退使用 default_key")
+            key_spec = str(default_key)
+        else:
             die(
-                f"配置条目 (host={host}, user_or_group={user_or_group}) 缺少 ssh_key 字段"
+                "当前仓库及全局均未配置 user.email，无法确定使用哪个 sshKey。"
+                "请先执行: git config user.email \"you@example.com\""
             )
+    else:
+        entries = config.get("keys") or []
+        if not isinstance(entries, list):
+            die("配置文件中的 keys 字段必须是列表")
+
+        entry = select_entry(entries, host, email)
+
+        if entry is None:
+            # 配置中无该 (host, email) 的映射：回退到 default_key（若配置），
+            # 否则原样透传，交给 ssh 自身的 ~/.ssh/config 与 agent 处理
+            if not default_key:
+                warn(
+                    f"配置中未找到 (host={host}, email={email}) 的映射，"
+                    "按 ssh 默认行为透传"
+                )
+                return run_ssh(ssh_bin, [], orig_argv)
+            key_spec = str(default_key)
+        else:
+            key_spec = str(entry.get("ssh_key", ""))
+            if not key_spec:
+                die(f"配置条目 (host={host}, email={email}) 缺少 ssh_key 字段")
 
     key_path = resolve_key_path(key_spec, CONFIG_PATH.parent)
     key_opts = ["-i", str(key_path), "-o", "IdentitiesOnly=yes"]

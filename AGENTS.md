@@ -22,13 +22,19 @@ identity and SSH key for remote operations (push / pull / fetch / clone over SSH
    Unrecognizable arguments are passed through to real `ssh` unchanged (no-op).
 2. The script parses the ssh-style argv git passes in
    (`[-p port] [-o ...] git@<host> "git-upload-pack '<owner>/<repo>.git'"`) to
-   extract `host` and `user_or_group` (first path segment of the repo path).
-3. `(host, user_or_group)` uniquely selects an `ssh_key` from the YAML config;
-   duplicate matches are a config error. `default_key` (optional) is the fallback.
-4. Key spec rules: bare filename → look under `~/.ssh/`, error if missing;
+   extract `host` (handles `-p port`, `-o ...`, bundled flags, `user@host`, IPv6).
+3. The identity is the `user.email` effective in the current repository, read via
+   `git config --get user.email` (repo-local overrides global; during clone there
+   is no local config so the global value applies).
+4. `(host, user.email)` uniquely selects an `ssh_key` from the YAML config;
+   duplicate matches are a config error. Host match is case-insensitive, email
+   match is exact. `default_key` (optional) is the fallback when there is no
+   match or no email is configured; without it, no-match falls back to
+   transparent pass-through and missing-email is a hard error.
+5. Key spec rules: bare filename → look under `~/.ssh/`, error if missing;
    absolute path or path containing separators → resolve as given (relative to
    the config file's directory), error if missing.
-5. The real ssh binary is located via PATH (guarding against resolving to the
+6. The real ssh binary is located via PATH (guarding against resolving to the
    script itself) and executed as a subprocess with
    `-i <key> -o IdentitiesOnly=yes` prepended; the exit code is propagated.
 
@@ -36,8 +42,8 @@ identity and SSH key for remote operations (push / pull / fetch / clone over SSH
 
 - Python 3.8+ (Windows & Linux), plus `pip install pyyaml`.
 - No test suite yet. Smoke-test parsing with:
-  `python -c "from git_ssh_wrapper import parse_ssh_argv; print(parse_ssh_argv(['git@github.com', \"git-upload-pack '/alice/repo.git'\"]))"`
-- End-to-end check: configure a mapping, then run
+  `python -c "from git_ssh_wrapper import parse_ssh_host; print(parse_ssh_host(['git@github.com', \"git-upload-pack '/alice/repo.git'\"]))"`
+- End-to-end check: configure a mapping and a repo-local `user.email`, then run
   `git ls-remote git@<host>:<owner>/<repo>.git` with `GIT_TRACE=1` and confirm the
   wrapper injects the expected `-i` key.
 
@@ -45,5 +51,7 @@ identity and SSH key for remote operations (push / pull / fetch / clone over SSH
 
 - Source file is UTF-8 with Chinese user-facing messages (the wrapper's users are
   Chinese-speaking); stdout/stderr are reconfigured to UTF-8 for Windows consoles.
-- Match, don't break: any parsing failure must fall back to transparent
-  pass-through to real ssh, never abort a git operation with an unclear error.
+- Match, don't break: unparseable argv or a missing mapping must fall back to
+  transparent pass-through (or `default_key`) rather than aborting with an
+  unclear error; a missing `user.email` with no `default_key` is the one hard
+  error, since identity cannot be determined at all.
