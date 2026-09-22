@@ -36,8 +36,6 @@ git 调用本脚本时的参数形如：
 格式见 git-ssh-wrapper.example.yaml。
 """
 
-from __future__ import annotations
-
 import os
 import shutil
 import subprocess

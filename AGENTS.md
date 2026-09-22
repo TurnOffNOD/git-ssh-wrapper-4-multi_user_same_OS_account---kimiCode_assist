@@ -40,7 +40,8 @@ identity and SSH key for remote operations (push / pull / fetch / clone over SSH
 
 ## Dependencies and testing
 
-- Python 3.8+ (Windows & Linux), plus `pip install pyyaml`.
+- Python 3.14+（Windows & Linux；注解惰性求值见 PEP 649，无需 future 导入），
+  外加 `pip install pyyaml`。
 - No test suite yet. Smoke-test parsing with:
   `python -c "from git_ssh_wrapper import parse_ssh_host; print(parse_ssh_host(['git@github.com', \"git-upload-pack '/alice/repo.git'\"]))"`
 - End-to-end check: configure a mapping and a repo-local `user.email`, then run
