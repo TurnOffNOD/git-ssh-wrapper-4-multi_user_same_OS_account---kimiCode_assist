@@ -41,4 +41,4 @@ keys:
 # 可选：兜底 key。当 remote 的 (host, email) 在上面没有匹配条目时使用；
 # 未配置 user.email 时也会回退到它；
 # 不配置则按 ssh 默认行为透传（走 ~/.ssh/config 与 ssh-agent）。
-default_key: id_ed25519
+#default_key: id_ed25519
